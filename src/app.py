@@ -28,6 +28,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
@@ -43,12 +44,24 @@ from src.session import store as session_store
 
 logger = logging.getLogger(__name__)
 
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle."""
+    _load_user_fixtures()
+    logger.info(f"Loaded {len(_USER_CACHE)} user fixtures")
+    yield
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Valura AI",
     description="AI co-investor microservice — build, monitor, grow, protect.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -79,11 +92,6 @@ def _load_user_fixtures() -> None:
         except Exception as e:
             logger.warning(f"Failed to load user fixture {path}: {e}")
 
-
-@app.on_event("startup")
-async def startup() -> None:
-    _load_user_fixtures()
-    logger.info(f"Loaded {len(_USER_CACHE)} user fixtures")
 
 
 def get_user(user_id: str) -> UserProfile:
@@ -150,25 +158,23 @@ async def _pipeline_stream(request: ChatRequest) -> AsyncIterator[dict]:
     try:
         elapsed = time.monotonic() - start_time
         remaining = max(PIPELINE_TIMEOUT - elapsed, 5.0)
+        deadline = time.monotonic() + remaining
 
-        async for chunk in asyncio.wait_for(
-            _consume_agent(agent, request.query, user, classification.entities),
-            timeout=remaining,
-        ):
+        async for chunk in agent.stream(request.query, user, classification.entities):
+            if time.monotonic() > deadline:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({
+                        "error": "timeout",
+                        "message": "The request timed out. Please try again.",
+                    }),
+                }
+                return
             yield {
                 "event": "agent_response",
                 "data": chunk,
             }
 
-    except asyncio.TimeoutError:
-        yield {
-            "event": "error",
-            "data": json.dumps({
-                "error": "timeout",
-                "message": "The request timed out. Please try again.",
-            }),
-        }
-        return
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
         yield {
@@ -189,12 +195,6 @@ async def _pipeline_stream(request: ChatRequest) -> AsyncIterator[dict]:
             "elapsed_seconds": round(elapsed, 2),
         }),
     }
-
-
-async def _consume_agent(agent, query, user, entities) -> AsyncIterator[str]:
-    """Helper to consume the agent's stream."""
-    async for chunk in agent.stream(query, user, entities):
-        yield chunk
 
 
 # ── HTTP endpoint ─────────────────────────────────────────────────────────────
