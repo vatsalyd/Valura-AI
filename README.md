@@ -1,81 +1,232 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/SHM9MYZJ)
-# Valura AI — Team Lead Project Assignment
+# Valura AI — Team Lead Assignment
 
-You have been given access to this repository as part of the Valura AI team lead hiring process.
-
-**Read [`ASSIGNMENT.md`](ASSIGNMENT.md) in full before writing a single line of code.**
+> An AI agent ecosystem that helps novice investors **build, monitor, grow, and protect** their portfolio.
 
 ---
 
-## What you're building
-
-An AI agent ecosystem that helps a novice investor **build, monitor, grow, and protect** their portfolio. See [`ASSIGNMENT.md`](ASSIGNMENT.md) for the full mission, scope, and constraints.
-
----
-
-## Setup
-
-**Requirements:** Python 3.11+, an OpenAI API key.
-
-**Persistence is your choice.** Postgres, SQLite, or in-memory — pick one and defend it in your README. `DATABASE_URL` in `.env.example` is optional.
-
-**Streaming is required.** SSE only. Use `sse-starlette`, FastAPI's `StreamingResponse`, or roll your own — your call.
+## 🚀 Quick Start
 
 ```bash
-git clone <your-classroom-repo-url>
+# Clone and setup
+git clone <your-repo-url>
 cd <repo-name>
 
 python -m venv venv
-source venv/bin/activate        # Linux/macOS
 venv\Scripts\activate           # Windows
+# source venv/bin/activate      # Linux/macOS
 
 pip install -r requirements.txt
 
 cp .env.example .env
-# Fill in OPENAI_API_KEY
+# Fill in OPENAI_API_KEY in .env
 ```
 
-Use `gpt-4o-mini` while developing to keep costs down. Evaluation runs against `gpt-4.1`.
+### Run the server
 
----
+```bash
+uvicorn src.app:app --reload --port 8000
+```
 
-## Running Tests
+### Run tests (no API key needed)
 
 ```bash
 pytest tests/ -v
 ```
 
-Tests must pass without an `OPENAI_API_KEY` set — mock the LLM. We will run `pytest tests/ -v` on your repo.
+---
+
+## 📋 Required Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OPENAI_API_KEY` | Yes (runtime only) | — | OpenAI API key. Not needed for tests. |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | Model for classifier + agents. Use `gpt-4.1` for eval. |
+| `APP_ENV` | No | `development` | `development` / `production` / `test` |
 
 ---
 
-## Repository Structure
-
-When you submit, your repository must contain:
+## 🏗️ Architecture
 
 ```
-README.md   ← overwrite this with your own (setup, decisions, library choices, video link)
-src/        ← all code
-tests/      ← all tests, must pass with pytest
+POST /chat
+  │
+  ▼
+┌─────────────────┐
+│  Safety Guard    │ ← Pure regex, no LLM, <1ms
+│  (local filter)  │
+└────────┬────────┘
+         │ pass
+         ▼
+┌─────────────────┐
+│ Intent Classifier│ ← Single LLM call (function calling)
+│ (1 API call)     │   Returns: agent, entities, safety verdict
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Agent Router    │ ← Registry pattern, O(1) lookup
+│                  │   StubAgent for unimplemented agents
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Specialist Agent │ ← Portfolio Health (implemented)
+│                  │   Others return structured stub
+└────────┬────────┘
+         │
+         ▼
+    SSE Stream → Client
 ```
 
-`fixtures/`, `pytest.ini`, `requirements.txt`, `.env.example`, and `.github/` are part of the scaffold — leave them in place. Do not delete `ASSIGNMENT.md`.
+**Pipeline flow:** Every request follows this exact path. The safety guard is the only authority that blocks — it runs before any LLM call. The classifier's safety verdict is informational only.
 
 ---
 
-## Submission
+## 🔑 Key Decisions
 
-- Push commits **throughout** your work — we read the git log
-- Your `README.md` must:
-  - Explain how to run your code
-  - List every required environment variable
-  - Document the non-obvious decisions you made
-  - Link your defence video (≤ 10 min — see `ASSIGNMENT.md`)
-- Deadline: **3 days** from the date you accepted this assignment
-- Defence video: due within **24 hours** of your final commit
+### 1. Safety Guard: Regex + Heuristic Scoring (no ML)
+
+**Choice:** Two-layer regex approach — action-phrase detection + educational intent signals.
+
+**Why:**
+- Assignment demands <10ms, no LLM, no network. This rules out any ML model.
+- Layer 1 catches first-person harmful intent ("help me pump the stock", "trade on confidential info").
+- Layer 2 detects educational queries ("what is insider trading?", "explain money laundering") and lets them through.
+
+**Tradeoff:** Biases toward safety — recall ≥95% is prioritised over passthrough ≥90%. A query that combines harmful keywords with ambiguous verbs may be over-blocked. Documented and accepted because the cost of missing a harmful query is higher than over-blocking an educational one.
+
+**Performance:** Sub-1ms per query in testing (well under the 10ms requirement).
+
+### 2. Intent Classifier: OpenAI Function Calling
+
+**Choice:** Single `function_call` to the OpenAI API with a JSON schema that extracts agent, entities, safety verdict, and confidence — all in one call.
+
+**Why:**
+- Function calling returns validated JSON matching our Pydantic schema.
+- One call does everything: routing, entity extraction, safety assessment.
+- `temperature=0.0` for deterministic classification.
+
+**Fallback:** If the LLM call fails (timeout, API error, malformed response), we route to `general_query` with empty entities. The request never crashes.
+
+**Follow-up resolution:** Conversation history (last 6 turns) is passed in the messages array. The system prompt instructs the model to resolve pronouns using context but classify the current turn's intent independently.
+
+### 3. Portfolio Health Agent: Compute Locally, Narrate with LLM
+
+**Choice:** All numerical metrics (concentration, performance, benchmark comparison) are computed locally from market data. The LLM is used only to generate a plain-language summary.
+
+**Why:**
+- Numbers must be trustworthy. LLMs hallucinate financial data.
+- Local computation is testable and deterministic.
+- If the LLM fails, the structured data is still returned with a template summary.
+
+**Market data:** yfinance — free, no API key, covers all exchanges in fixtures (NASDAQ, NYSE, LSE, Euronext, TSE).
+
+### 4. Session Persistence: In-Memory Dict
+
+**Choice:** `dict[str, Session]` with O(1) lookup.
+
+**Why:** Demo scope. No production traffic. The interface (`get_or_create`, `append_turn`, `get_recent_turns`) is designed so swapping to SQLite or Postgres later requires changing only `session.py` — no caller changes.
+
+**Tradeoff:** Data lost on restart. Acceptable for demo.
+
+### 5. Pipeline Timeout: 30 Seconds
+
+**Why:** p95 target is <6s end-to-end. 30s gives 5× headroom for worst-case LLM latency. Beyond 30s, the user has lost interest. The timeout wraps only the agent execution; safety guard and classifier have their own timeouts.
+
+### 6. Streaming: SSE via sse-starlette
+
+**Choice:** `sse-starlette` (already in scaffold requirements).
+
+**Why:** Proven with FastAPI, handles async generators natively, minimal code. The portfolio health agent streams in logical sections (concentration → performance → benchmark → observations → summary → disclaimer) for progressive rendering on the client side.
 
 ---
 
-## Environment
+## 📁 Repository Structure
 
-You self-host everything. We do not provide credentials. See `.env.example` for the variables you'll need.
+```
+src/
+├── __init__.py
+├── app.py                    # FastAPI app, SSE endpoint, pipeline orchestration
+├── config.py                 # Pydantic settings from .env
+├── models.py                 # All Pydantic domain models
+├── safety.py                 # Safety guard — regex-based, no LLM
+├── classifier.py             # Intent classifier — single LLM call
+├── router.py                 # Agent registry + dispatch
+├── session.py                # In-memory conversation session store
+├── market_data.py            # yfinance wrapper with TTL cache
+└── agents/
+    ├── __init__.py
+    ├── base.py               # Abstract base agent interface
+    ├── portfolio_health.py   # Full implementation — MONITOR + PROTECT
+    └── stub.py               # Structured stub for unimplemented agents
+
+tests/
+├── conftest.py               # Shared fixtures, LLM mock
+├── test_safety_pairs.py      # Safety guard recall + passthrough
+├── test_classifier_routing.py# Classifier routing accuracy + entity matching
+├── test_portfolio_health_skeleton.py  # Portfolio health agent tests
+├── test_conversations.py     # Follow-up, multi-intent, ambiguous sessions
+└── test_http.py              # HTTP integration tests (SSE pipeline)
+
+fixtures/                     # Provided test data (do not modify)
+```
+
+---
+
+## 📚 Library Justifications
+
+| Library | Why |
+|---|---|
+| `fastapi` | Async, fast, native Pydantic integration, OpenAPI docs |
+| `sse-starlette` | SSE support for FastAPI — provided in scaffold |
+| `openai` | Official SDK for structured outputs and function calling |
+| `pydantic` + `pydantic-settings` | Type-safe models + validated config from .env |
+| `yfinance` | Free market data covering all exchanges in fixtures, no API key |
+| `python-dotenv` | .env file loading |
+| `httpx` | Async HTTP client for testing |
+
+---
+
+## 📊 Cost & Performance
+
+### Measurement Method
+
+- **First-token latency:** Measured from request receipt to first SSE event emission using `time.monotonic()`
+- **End-to-end:** Measured from request receipt to final `done` SSE event
+- **Cost:** Estimated using OpenAI pricing for input/output tokens per classification + agent call
+
+### Targets vs Actuals
+
+| Metric | Target | Design |
+|---|---|---|
+| Model (dev) | gpt-4o-mini | ✅ gpt-4o-mini |
+| Model (eval) | gpt-4.1 | ✅ Configurable via OPENAI_MODEL |
+| p95 first-token | <2s | Safety guard responds in <1ms; classifier ~500ms |
+| p95 end-to-end | <6s | 1 LLM call + market data fetch. Cached after first call. |
+| Cost per query | <$0.05 | 1 classifier call (~200 tokens) + 1 agent call (~500 tokens) |
+
+### Cost Breakdown (gpt-4.1 pricing)
+
+- Classifier: ~200 input tokens × $2/1M + ~100 output tokens × $8/1M = ~$0.001
+- Portfolio Health summary: ~500 input tokens × $2/1M + ~200 output tokens × $8/1M = ~$0.003
+- **Total per query: ~$0.004** (well under $0.05)
+
+---
+
+## 🎥 Defence Video
+
+> [VIDEO LINK HERE — to be added after recording]
+
+---
+
+## 🔮 What I'd Do Differently With Another Week
+
+1. **Embedding-based pre-classifier** — Use sentence-transformers to skip the LLM call when confidence is high (stretch goal). Would cut latency and cost for common queries by ~70%.
+
+2. **Persistent sessions with SQLite** — The in-memory store is fine for demo but loses context on restart. `aiosqlite` with a simple turns table would take ~1 hour.
+
+3. **Implement more agents** — Market Research (yfinance + news API), Financial Calculator (deterministic math), and Risk Assessment (portfolio beta/drawdown) are all natural next steps.
+
+4. **Structured logging + OpenTelemetry** — For production observability: trace IDs through the pipeline, latency histograms, LLM token usage tracking.
+
+5. **Rate limiting per tenant** — Token bucket per user_id, configurable per tier (premium vs free).
