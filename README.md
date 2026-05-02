@@ -24,7 +24,7 @@ cp .env.example .env
 ### Run the server
 
 ```bash
-uvicorn src.app:app --reload --port 8000
+python -m uvicorn src.app:app --reload --port 8000
 ```
 
 ### Run tests (no API key needed)
