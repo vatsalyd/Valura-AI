@@ -215,3 +215,11 @@ async def chat(request: ChatRequest) -> EventSourceResponse:
 async def health() -> dict:
     """Health check endpoint."""
     return {"status": "ok", "service": "valura-ai"}
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    """Redirect root to Swagger UI."""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/docs")
+
