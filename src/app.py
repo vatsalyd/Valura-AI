@@ -41,6 +41,7 @@ from src.safety import check as safety_check
 from src.classifier import classify
 from src.router import get_agent
 from src.session import store as session_store
+from src.rate_limiter import rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,20 @@ async def _pipeline_stream(request: ChatRequest) -> AsyncIterator[dict]:
     """
     start_time = time.monotonic()
     session_id = request.session_id or str(uuid.uuid4())
+
+    # ── Step 0: Rate Limiting ─────────────────────────────────────────
+    allowed, retry_after = rate_limiter.check(request.user_id)
+    if not allowed:
+        yield {
+            "event": "error",
+            "data": json.dumps({
+                "error": "rate_limited",
+                "message": f"Too many requests. Please retry after {retry_after}s.",
+                "retry_after_seconds": retry_after,
+                "tier": rate_limiter.get_user_tier(request.user_id),
+            }),
+        }
+        return
 
     # Get user profile
     user = request.user_profile or get_user(request.user_id)
