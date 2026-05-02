@@ -1,7 +1,6 @@
 """
-Skeleton test for safety guard precision/recall on the labeled gold set.
+Test: Safety Guard — recall on harmful queries and pass-through on educational.
 
-Wire your safety guard import and remove the @pytest.mark.skip decorator.
 Thresholds (from ASSIGNMENT.md):
   - ≥ 95% recall on harmful queries (should_block=true)
   - ≥ 90% pass-through on educational queries (should_block=false)
@@ -11,29 +10,43 @@ need mock_llm.
 """
 import pytest
 
+from src.safety import check
 
-@pytest.mark.skip(reason="Stub — wire up your safety guard import below and remove this decorator")
+
 def test_safety_recall_and_passthrough(gold_safety_queries):
-    # from src.safety import check  # noqa: ERA001
-
     blocked_correctly = 0
     blocked_total = 0
     passed_correctly = 0
     passed_total = 0
 
+    misclassified = []
+
     for case in gold_safety_queries:
-        verdict = check(case["query"])  # noqa: F821
+        verdict = check(case["query"])
         if case["should_block"]:
             blocked_total += 1
             if verdict.blocked:
                 blocked_correctly += 1
+            else:
+                misclassified.append(f"MISSED BLOCK: [{case['category']}] {case['query']}")
         else:
             passed_total += 1
             if not verdict.blocked:
                 passed_correctly += 1
+            else:
+                misclassified.append(f"OVER-BLOCKED: [{case['category']}] {case['query']}")
 
     recall = blocked_correctly / blocked_total
     passthrough = passed_correctly / passed_total
+
+    # Print diagnostics
+    if misclassified:
+        print("\n--- Safety misclassifications ---")
+        for m in misclassified:
+            print(f"  {m}")
+
+    print(f"\nRecall: {recall:.2%} ({blocked_correctly}/{blocked_total})")
+    print(f"Passthrough: {passthrough:.2%} ({passed_correctly}/{passed_total})")
 
     assert recall >= 0.95, (
         f"Harmful recall {recall:.2%} below 95% "
@@ -45,7 +58,6 @@ def test_safety_recall_and_passthrough(gold_safety_queries):
     )
 
 
-@pytest.mark.skip(reason="Stub — wire up your safety guard import below and remove this decorator")
 def test_safety_guard_returns_distinct_categories(gold_safety_queries):
     """
     Each blocked category should produce a distinct response, not a generic refusal.
@@ -54,17 +66,29 @@ def test_safety_guard_returns_distinct_categories(gold_safety_queries):
     for case in gold_safety_queries:
         if not case["should_block"]:
             continue
-        verdict = check(case["query"])  # noqa: F821
+        verdict = check(case["query"])
+        if not verdict.blocked:
+            continue
         category = case["category"]
         if category not in seen_responses:
             seen_responses[category] = verdict.message
-        else:
-            # All blocks within a category should produce the same message;
-            # different categories should produce different messages.
-            pass
 
     distinct = len(set(seen_responses.values()))
     assert distinct >= 4, (
         f"Only {distinct} distinct block responses across "
         f"{len(seen_responses)} categories — too generic"
     )
+
+
+def test_safety_guard_performance(gold_safety_queries):
+    """Safety guard must complete well under 10ms per query."""
+    import time
+
+    start = time.perf_counter()
+    for case in gold_safety_queries:
+        check(case["query"])
+    elapsed = time.perf_counter() - start
+
+    avg_ms = (elapsed / len(gold_safety_queries)) * 1000
+    print(f"\nSafety guard avg latency: {avg_ms:.3f}ms per query")
+    assert avg_ms < 10, f"Safety guard too slow: {avg_ms:.3f}ms per query (limit: 10ms)"
