@@ -17,6 +17,10 @@ openai>=1.30.0             # OpenAI Python SDK — structured outputs, streaming
 
 # --- Utilities ---
 python-dotenv>=1.0.0
+pydantic-settings>=2.2.0   # Pydantic-based settings from .env
+
+# --- Market data ---
+yfinance>=0.2.36           # Live prices, sector data, benchmarks — free, no API key
 
 # --- Testing ---
 pytest>=8.2.0
