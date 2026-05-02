@@ -52,6 +52,11 @@ POST /chat
   │
   ▼
 ┌─────────────────┐
+│  Rate Limiter    │ ← Token bucket, per-user, tiered (free/premium/unlimited)
+└────────┬────────┘
+         │ pass
+         ▼
+┌─────────────────┐
 │  Safety Guard    │ ← Pure regex, no LLM, <1ms
 │  (local filter)  │
 └────────┬────────┘
@@ -139,6 +144,24 @@ POST /chat
 
 **Why:** Proven with FastAPI, handles async generators natively, minimal code. The portfolio health agent streams in logical sections (concentration → performance → benchmark → observations → summary → disclaimer) for progressive rendering on the client side.
 
+### 7. Multi-Tenant Rate Limiting (Stretch Goal)
+
+**Choice:** Token bucket algorithm, per-user, with tiered limits.
+
+**Why:**
+- Token bucket allows short bursts (user sends 3 quick queries) while enforcing an average rate — better UX than a hard sliding window.
+- Per-user isolation prevents one heavy user from starving others.
+- Zero external dependencies — in-memory for demo, swappable to Redis for production.
+
+**Tiers:**
+| Tier | Requests/min | Burst |
+|---|---|---|
+| `free` | 10 | 5 |
+| `premium` | 60 | 15 |
+| `unlimited` | ∞ | ∞ |
+
+**Pipeline position:** Runs as Step 0, before safety guard — rate-limited requests never touch the LLM, saving cost.
+
 ---
 
 ## 📁 Repository Structure
@@ -154,6 +177,7 @@ src/
 ├── router.py                 # Agent registry + dispatch
 ├── session.py                # In-memory conversation session store
 ├── market_data.py            # yfinance wrapper with TTL cache
+├── rate_limiter.py           # Multi-tenant token bucket rate limiter
 └── agents/
     ├── __init__.py
     ├── base.py               # Abstract base agent interface
