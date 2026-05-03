@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="", alias="OPENAI_BASE_URL")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
 
     # --- App ---
