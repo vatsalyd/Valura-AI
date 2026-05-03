@@ -196,22 +196,40 @@ def classify(
     # Real OpenAI call
     try:
         settings = get_settings()
-        client = OpenAI(api_key=settings.openai_api_key)
+        client_kwargs = {"api_key": settings.openai_api_key}
+        if settings.openai_base_url:
+            client_kwargs["base_url"] = settings.openai_base_url
+        client = OpenAI(**client_kwargs)
         messages = _build_messages(query, conversation_history)
 
         response = client.chat.completions.create(
             model=settings.openai_model,
             messages=messages,
-            functions=[CLASSIFY_FUNCTION],
-            function_call={"name": "classify_intent"},
+            tools=[{
+                "type": "function",
+                "function": CLASSIFY_FUNCTION,
+            }],
+            tool_choice={"type": "function", "function": {"name": "classify_intent"}},
             temperature=0.0,  # Deterministic for consistent routing
             timeout=settings.llm_timeout_seconds,
         )
 
-        # Extract function call result
-        fn_call = response.choices[0].message.function_call
-        if fn_call and fn_call.arguments:
-            parsed = json.loads(fn_call.arguments)
+        # Extract tool call result (modern format)
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+
+        # Try modern tools format first
+        if tool_calls and len(tool_calls) > 0:
+            parsed = json.loads(tool_calls[0].function.arguments)
+        # Fallback to legacy function_call format
+        elif hasattr(msg, "function_call") and msg.function_call and msg.function_call.arguments:
+            parsed = json.loads(msg.function_call.arguments)
+        else:
+            # No structured output — try parsing content as JSON
+            content = msg.content or ""
+            parsed = json.loads(content) if content.strip().startswith("{") else None
+
+        if parsed:
             # Clean up entities — remove None/empty values
             entities = {k: v for k, v in parsed.get("entities", {}).items() if v is not None}
             return ClassifierResult(
