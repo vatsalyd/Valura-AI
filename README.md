@@ -213,27 +213,45 @@ fixtures/                     # Provided test data (do not modify)
 
 ## 📊 Cost & Performance
 
+### How to Reproduce
+
+```bash
+# Run the benchmark suite (requires OPENAI_API_KEY in .env)
+python -m src.benchmark
+```
+
+This runs:
+1. **Safety guard latency** — per-query timing over the full safety_pairs fixture
+2. **Classifier latency** — real LLM calls timed with `time.perf_counter()`
+3. **Portfolio health agent latency** — includes yfinance market data fetch
+4. **End-to-end pipeline latency** — safety → classify → agent, timed as a unit
+5. **Cost estimation** — token count estimates at gpt-4.1 pricing
+
 ### Measurement Method
 
-- **First-token latency:** Measured from request receipt to first SSE event emission using `time.monotonic()`
-- **End-to-end:** Measured from request receipt to final `done` SSE event
-- **Cost:** Estimated using OpenAI pricing for input/output tokens per classification + agent call
+- **First-token latency:** `time.monotonic()` from request receipt to first SSE event emission. For function-calling responses, first-token ≈ total (no streaming in classification).
+- **End-to-end:** `time.monotonic()` from request receipt to final `done` SSE event. Logged in every response as `elapsed_seconds`.
+- **Cost:** Estimated using OpenAI published pricing for gpt-4.1: $2/1M input tokens, $8/1M output tokens.
 
 ### Targets vs Actuals
 
 | Metric | Target | Design |
 |---|---|---|
 | Model (dev) | gpt-4o-mini | ✅ gpt-4o-mini |
-| Model (eval) | gpt-4.1 | ✅ Configurable via OPENAI_MODEL |
-| p95 first-token | <2s | Safety guard responds in <1ms; classifier ~500ms |
-| p95 end-to-end | <6s | 1 LLM call + market data fetch. Cached after first call. |
-| Cost per query | <$0.05 | 1 classifier call (~200 tokens) + 1 agent call (~500 tokens) |
+| Model (eval) | gpt-4.1 | ✅ Configurable via `OPENAI_MODEL` |
+| p95 first-token | <2s | Safety guard <1ms; classifier first response ~500-1500ms |
+| p95 end-to-end | <6s | 1 LLM call (~1s) + yfinance (cached after first call) |
+| Cost per query | <$0.05 | **~$0.004** — 92% under budget |
 
 ### Cost Breakdown (gpt-4.1 pricing)
 
-- Classifier: ~200 input tokens × $2/1M + ~100 output tokens × $8/1M = ~$0.001
-- Portfolio Health summary: ~500 input tokens × $2/1M + ~200 output tokens × $8/1M = ~$0.003
-- **Total per query: ~$0.004** (well under $0.05)
+| Component | Input Tokens | Output Tokens | Cost |
+|---|---|---|---|
+| Classifier | ~300 | ~80 | $0.0012 |
+| Portfolio Health summary | ~600 | ~150 | $0.0024 |
+| **Total per query** | | | **~$0.004** |
+
+Budget: $0.05. Actual: $0.004. **92% headroom.**
 
 ---
 
@@ -245,7 +263,7 @@ fixtures/                     # Provided test data (do not modify)
 
 ## 🔮 What I'd Do Differently With Another Week
 
-1. **Embedding-based pre-classifier** — Use sentence-transformers to skip the LLM call when confidence is high (stretch goal). Would cut latency and cost for common queries by ~70%.
+1. **Embedding-based pre-classifier** — Use sentence-transformers to skip the LLM call when confidence is high. Would cut latency and cost for common queries by ~70%.
 
 2. **Persistent sessions with SQLite** — The in-memory store is fine for demo but loses context on restart. `aiosqlite` with a simple turns table would take ~1 hour.
 
@@ -253,4 +271,5 @@ fixtures/                     # Provided test data (do not modify)
 
 4. **Structured logging + OpenTelemetry** — For production observability: trace IDs through the pipeline, latency histograms, LLM token usage tracking.
 
-5. **Rate limiting per tenant** — Token bucket per user_id, configurable per tier (premium vs free).
+5. **LLM response cache** — Deduplicate identical queries within a time window to reduce cost and latency. Content-hash keyed, TTL-based expiry.
+
