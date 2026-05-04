@@ -164,6 +164,53 @@ POST /chat
 
 ---
 
+## 🧠 Non-Obvious Technical Decisions
+
+These are deeper architectural choices that aren't immediately apparent from reading the code.
+
+### 1. Provider-Agnostic LLM Configuration
+
+The assignment specifies gpt-4o-mini for development. I used **gpt-oss-120b via OpenRouter** because OpenAI's API requires a credit card for billing, which wasn't accessible during this assignment. OpenRouter provides free credits with an OpenAI-compatible API — same SDK, same function-calling, just a different base URL.
+
+**How it works:** `src/config.py` has three LLM fields — `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`. The classifier conditionally passes `base_url` to the OpenAI client only when set. This means the same codebase works with:
+- OpenAI directly (`OPENAI_MODEL=gpt-4.1`, no base URL)
+- OpenRouter (`OPENAI_BASE_URL=https://openrouter.ai/api/v1`)
+- Azure OpenAI, Ollama, vLLM — any compatible provider
+
+For evaluation, the team sets `OPENAI_MODEL=gpt-4.1` and removes `OPENAI_BASE_URL` — **zero code changes.**
+
+### 2. Two-Layer Safety with Educational Bypass
+
+Keyword-based safety would block "what is insider trading?" — a legitimate educational query. The assignment grades both **recall ≥95%** on harmful queries AND **passthrough ≥90%** on educational ones. You must optimize for both simultaneously.
+
+**Solution:** Layer 1 (action-phrase detection) catches first-person harmful intent. Layer 2 (educational bypass) checks if the query starts with educational signals like "what is", "explain", "how do regulators". The `_is_genuinely_educational()` function resolves conflicts — if a query starts with an educational prefix but contains action patterns, the educational prefix wins.
+
+**Bias is intentional:** I prioritize recall over passthrough. The cost of missing a harmful query (regulatory risk) is higher than over-blocking an educational one (minor UX friction).
+
+### 3. Local Math, LLM Only for Narrative
+
+It would be simpler to send the portfolio JSON to GPT and ask for analysis. But **LLMs hallucinate numbers**. If I ask a model to calculate annualized return from purchase dates and prices, it will confidently produce wrong numbers.
+
+**Hybrid architecture:**
+- Concentration risk, total return, annualized return (CAGR formula), benchmark alpha, sector/currency diversification — all computed deterministically in Python from live yfinance data
+- The LLM takes pre-computed metrics as input and writes a 2-3 sentence human summary
+- If the LLM fails? Structured data is still returned with a template fallback
+
+**Why this matters for testing:** I can assert exact numerical values in unit tests without mocking LLM responses. The math is testable in isolation.
+
+### 4. Graceful Degradation at Every Layer
+
+Every component has a defined failure mode — nothing crashes:
+
+| Component | Failure | Fallback |
+|---|---|---|
+| LLM classifier | Timeout / API error | Route to `general_query`, confidence 0.0 |
+| Market data (yfinance) | Ticker not found | Use `avg_cost` from user fixtures |
+| LLM summary | Generation fails | Template-based summary from metrics |
+| Rate limiter | User exhausts quota | Structured SSE error with `retry_after_seconds` |
+| Agent not implemented | Route to missing agent | `StubAgent` returns classified intent + entities |
+| Pipeline timeout | Agent takes >30s | SSE timeout event, connection closed cleanly |
+
 ## 📁 Repository Structure
 
 ```
@@ -269,7 +316,9 @@ Budget: $0.05. Actual: $0.004. **93% headroom.**
 
 ## 🎥 Defence Video
 
-> [VIDEO LINK HERE — to be added after recording]
+🔗 **[Watch the defence video on YouTube](https://youtu.be/TgewZJjugaM)**
+
+Covers: architecture walkthrough, four non-obvious decisions, and what I'd change with another week.
 
 ---
 
